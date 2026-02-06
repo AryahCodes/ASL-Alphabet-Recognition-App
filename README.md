@@ -1,4 +1,4 @@
-# 🤟 SignApp - Real-Time ASL Alphabet Recognition
+#  SignApp - Real-Time ASL Alphabet Recognition
 
 NOTE:
 Live backend temporarily disabled due to TFLite deployment constraints on free hosting. So while Frontend is deployed on Vercel, it won't connect to the backend and won't work properly. 
