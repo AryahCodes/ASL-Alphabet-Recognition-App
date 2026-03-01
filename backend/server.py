@@ -8,6 +8,7 @@ from hand_processor import HandProcessor
 from data_collector import DataCollector
 from collections import deque, Counter
 import numpy as np
+import gc
 
 # -------------------------------------------------
 # Frame Buffer Class (TIER 2)
@@ -157,8 +158,8 @@ socketio = SocketIO(
 hand_processor = HandProcessor()
 data_collector = DataCollector()
 
-# ✅ MODEL SELECTION: Choose which model to use
-USE_PROFESSIONAL_MODEL = True  # Set to False to use old RandomForest
+# ✅ MODEL SELECTION: Professional model disabled to fit in Render free tier (512 MB)
+USE_PROFESSIONAL_MODEL = False
 
 print("=" * 60)
 print("🚀 Sign Language App - Backend Server")
@@ -203,6 +204,8 @@ print("   • Tier 1: Temporal smoothing (reduces jitter)")
 print("   • Tier 1.5: Z-score normalization (camera-distance invariant)")
 print("   • Tier 2: Frame buffering (stable predictions)")
 print("=" * 60)
+
+gc.collect()
 
 # -------------------------------------------------
 # REST API endpoints

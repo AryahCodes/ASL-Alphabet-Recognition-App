@@ -15,14 +15,8 @@ opencv-python-headless==4.8.1.78
 numpy==1.24.3
 scikit-learn==1.3.2
 
-# TFLite Runtime - Lightweight inference only (~5 MB vs ~400 MB for full TF)
-tflite-runtime
-
 # CRITICAL: Protobuf 3.x for MediaPipe compatibility
 protobuf==3.20.3
-
-# Data Processing
-pandas==2.1.4
 
 # Deployment
 gunicorn==21.2.0
