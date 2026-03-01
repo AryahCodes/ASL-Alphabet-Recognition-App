@@ -1,34 +1,25 @@
 import { io } from 'socket.io-client';
 import BACKEND_URL from './config';
 
-// More aggressive connection settings
 const socket = io(BACKEND_URL, {
-  transports: ['websocket', 'polling'],
+  transports: ['polling', 'websocket'],
   reconnection: true,
-  reconnectionDelay: 500,
-  reconnectionAttempts: 10,
-  timeout: 20000,
-  forceNew: true
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  reconnectionAttempts: Infinity,
+  timeout: 30000,
 });
 
 socket.on('connect', () => {
-  console.log('✅ Socket connected! ID:', socket.id);
+  console.log('Socket connected! ID:', socket.id);
 });
 
 socket.on('disconnect', (reason) => {
-  console.log('❌ Socket disconnected! Reason:', reason);
+  console.log('Socket disconnected! Reason:', reason);
 });
 
 socket.on('connect_error', (error) => {
-  console.error('❌ Connection error:', error.message);
-});
-
-socket.on('reconnect_attempt', () => {
-  console.log('🔄 Attempting to reconnect...');
-});
-
-socket.on('reconnect', () => {
-  console.log('✅ Reconnected!');
+  console.error('Connection error:', error.message);
 });
 
 export default socket;

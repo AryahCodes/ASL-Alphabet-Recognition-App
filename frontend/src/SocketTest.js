@@ -7,34 +7,32 @@ function SocketTest() {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    // Listen for connection
     const handleConnect = () => {
-      console.log('✅ Connected to backend!');
       setIsConnected(true);
     };
-
     const handleDisconnect = () => {
-      console.log('❌ Disconnected from backend');
       setIsConnected(false);
     };
-
     const handleResponse = (data) => {
-      console.log('📩 Received from backend:', data);
       setMessages(prev => [...prev, data.message]);
+    };
+    const handleConnectError = (error) => {
+      console.error('Connection error:', error.message);
+      setIsConnected(false);
     };
 
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('response', handleResponse);
+    socket.on('connect_error', handleConnectError);
 
-    // Check initial connection status
     setIsConnected(socket.connected);
 
-    // Cleanup
     return () => {
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('response', handleResponse);
+      socket.off('connect_error', handleConnectError);
     };
   }, []);
 
@@ -68,12 +66,12 @@ function SocketTest() {
       <div style={{ 
         padding: '10px', 
         borderRadius: '8px',
-        backgroundColor: isConnected ? '#d4edda' : '#f8d7da',
-        color: isConnected ? '#155724' : '#721c24',
+        backgroundColor: isConnected ? '#d4edda' : '#fff3cd',
+        color: isConnected ? '#155724' : '#856404',
         marginBottom: '20px',
         fontWeight: 'bold'
       }}>
-        Status: {isConnected ? '✅ Connected' : '❌ Disconnected'}
+        Status: {isConnected ? '✅ Connected' : '⏳ Connecting... (backend may be waking up, ~30s)'}
       </div>
       
       <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>

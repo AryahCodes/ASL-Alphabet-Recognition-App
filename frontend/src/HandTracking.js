@@ -1,8 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import Webcam from 'react-webcam';
-import BACKEND_URL from './config';
-import io from 'socket.io-client';
-const socket = io(BACKEND_URL);
+import socket from './socket';
 
 function HandTracking() {
   const webcamRef = useRef(null);
