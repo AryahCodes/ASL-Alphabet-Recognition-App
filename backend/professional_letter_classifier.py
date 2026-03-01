@@ -1,6 +1,5 @@
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
+from tflite_runtime.interpreter import Interpreter
 import pickle
 import json
 from pathlib import Path
@@ -8,11 +7,13 @@ from pathlib import Path
 class ProfessionalLetterClassifier:
     """
     Professional Deep Learning Letter Classifier
-    Uses TensorFlow/Keras model trained on z-score normalized features
+    Uses TFLite Runtime for lightweight inference (~5 MB vs ~400 MB for full TensorFlow)
     """
     
     def __init__(self):
-        self.model = None
+        self.interpreter = None
+        self.input_index = None
+        self.output_index = None
         self.labels = []
         self.label_to_idx = {}
         self.idx_to_label = {}
@@ -21,17 +22,15 @@ class ProfessionalLetterClassifier:
         print("✅ ProfessionalLetterClassifier initialized")
     
     def load_model(self, model_path='models/professional_model.tflite'):
-        """Load the trained professional model"""
+        """Load the trained professional model using TFLite Runtime"""
         try:
             model_path = Path(model_path)
             
             if not model_path.exists():
                 print(f"⚠️  Model not found at {model_path}")
-                print("⚠️  Train the model first using: python train_professional_kaggle.py")
                 return False
             
-            # Load TensorFlow model
-            self.interpreter = tf.lite.Interpreter(model_path=str(model_path))
+            self.interpreter = Interpreter(model_path=str(model_path))
             self.interpreter.allocate_tensors()
             self.input_index = self.interpreter.get_input_details()[0]['index']
             self.output_index = self.interpreter.get_output_details()[0]['index']
@@ -48,7 +47,6 @@ class ProfessionalLetterClassifier:
                     self.labels = sorted(self.label_to_idx.keys())
                 print(f"✅ Loaded label mappings: {self.labels}")
             else:
-                # Fallback: load from JSON
                 labels_path = Path('models/professional_labels.json')
                 if labels_path.exists():
                     with open(labels_path, 'r') as f:
@@ -60,7 +58,6 @@ class ProfessionalLetterClassifier:
                     print("❌ No label mapping found!")
                     return False
             
-            # Initialize feature extractor
             from feature_extractor import FeatureExtractor
             self.feature_extractor = FeatureExtractor()
             
@@ -93,7 +90,6 @@ class ProfessionalLetterClassifier:
             }
         
         try:
-            # Extract features (with z-score normalization)
             features = self.feature_extractor.extract_features(landmarks)
             
             if features is None:
@@ -104,21 +100,16 @@ class ProfessionalLetterClassifier:
                     'confidence': 0.0
                 }
             
-            # Reshape for model input (batch size of 1)
             features = features.reshape(1, -1)
             
-            # Get prediction probabilities
             self.interpreter.set_tensor(self.input_index, features.astype(np.float32))
             self.interpreter.invoke()
             probabilities = self.interpreter.get_tensor(self.output_index)[0]
-
             
-            # Get predicted class
             predicted_idx = np.argmax(probabilities)
             predicted_letter = self.idx_to_label[predicted_idx]
             confidence = float(probabilities[predicted_idx])
             
-            # Get top 3 predictions
             top_3_indices = np.argsort(probabilities)[-3:][::-1]
             top_3 = [
                 {
@@ -151,7 +142,7 @@ class ProfessionalLetterClassifier:
             }
     
     def save_model(self, model_path='models/professional_model.tflite'):
-        """Model is already saved by TensorFlow during training"""
+        """Model is already saved during training"""
         print(f"💾 Professional model saved at {model_path}")
         return True
     
