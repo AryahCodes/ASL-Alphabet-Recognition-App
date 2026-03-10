@@ -8,9 +8,10 @@ class HandProcessor:
         """Initialize MediaPipe Hands"""
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
-            static_image_mode=True,
-            max_num_hands=1,
+            static_image_mode=False,
+            max_num_hands=2,
             min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         print("✅ HandProcessor initialized")
     
@@ -29,13 +30,13 @@ class HandProcessor:
             img_bytes = base64.b64decode(frame_data.split(',')[1])
             nparr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
+
             # Convert BGR to RGB (MediaPipe uses RGB)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
+
             # Process with MediaPipe
             results = self.hands.process(rgb_frame)
-            
+
             # Extract landmarks if hands detected
             if results.multi_hand_landmarks:
                 hands_data = []

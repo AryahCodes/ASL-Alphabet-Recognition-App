@@ -134,12 +134,12 @@ function HandTracking() {
     
     intervalRef.current = setInterval(() => {
       if (webcamRef.current && socket.connected) {
-        const imageSrc = webcamRef.current.getScreenshot({ width: 320, height: 240 });
+        const imageSrc = webcamRef.current.getScreenshot();
         if (imageSrc) {
           socket.emit('process_frame', { frame: imageSrc });
         }
       }
-    }, 250); // Send frame every 250ms (4 FPS) to stay within server limits
+    }, 100); // Send frame every 100ms (10 FPS)
   };
 
   // Stop tracking
@@ -182,7 +182,6 @@ function HandTracking() {
         <Webcam
           ref={webcamRef}
           screenshotFormat="image/jpeg"
-          screenshotQuality={0.5}
           style={{
             width: '640px',
             height: '480px',

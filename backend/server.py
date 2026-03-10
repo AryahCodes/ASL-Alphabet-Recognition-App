@@ -81,7 +81,7 @@ class FrameBuffer:
 class PredictionSmoother:
     """Smooths predictions over time to reduce jitter and improve accuracy"""
     
-    def __init__(self, window_size=7, confidence_threshold=0.50):
+    def __init__(self, window_size=7, confidence_threshold=0.30):
         self.window_size = window_size
         self.confidence_threshold = confidence_threshold
         self.predictions = deque(maxlen=window_size)
@@ -107,7 +107,7 @@ class PredictionSmoother:
         Get the most common prediction with averaged confidence
         Returns: (letter, confidence) or (None, 0.0) if not enough data
         """
-        if len(self.predictions) < 3:  # Need at least 3 predictions
+        if len(self.predictions) < 2:  # Need at least 3 predictions
             return None, 0.0
         
         # Count letter occurrences
@@ -158,8 +158,8 @@ socketio = SocketIO(
 hand_processor = HandProcessor()
 data_collector = DataCollector()
 
-# ✅ MODEL SELECTION: Professional model disabled to fit in Render free tier (512 MB)
-USE_PROFESSIONAL_MODEL = False
+# ✅ MODEL SELECTION: Choose which model to use
+USE_PROFESSIONAL_MODEL = True
 
 print("=" * 60)
 print("🚀 Sign Language App - Backend Server")
@@ -299,6 +299,7 @@ def handle_process_frame(data):
     try:
         client_id = request.sid
         frame_data = data.get("frame")
+        print("📷 Frame received")
 
         # Ensure client has smoother and buffer
         if client_id not in client_smoothers:
@@ -312,6 +313,8 @@ def handle_process_frame(data):
         # Process the frame
         result = hand_processor.process_frame(frame_data)
 
+        print("👋 Hand detected: ", result["hands_detected"])
+
         # If hand detected, add to buffer
         if result["success"] and result["hands_detected"] > 0:
             first_hand = result["hands"][0]
@@ -319,17 +322,25 @@ def handle_process_frame(data):
             
             # Add frame to buffer
             buffer.add_frame(landmarks)
-            
+            print("📦 Buffer size:", len(buffer.buffer))
+
             # Only make prediction if buffer is ready and it's time
-            if letter_classifier.is_trained and buffer.should_predict():
+            should_predict = buffer.should_predict()
+            print("🧠 Should predict:", should_predict)
+            if letter_classifier.is_trained and should_predict:
                 # Get averaged landmarks from buffer
                 avg_landmarks = buffer.get_average_landmarks()
                 
                 if avg_landmarks:
                     # Get raw prediction (will use z-score normalization internally)
                     prediction = letter_classifier.predict(avg_landmarks)
+
+                    print("🔍 Prediction: ", prediction)
                     
                     if prediction["success"]:
+
+                        result["letter_prediction"] = prediction
+
                         # Add to smoother
                         smoother.add_prediction(
                             prediction["letter"],
@@ -359,7 +370,6 @@ def handle_process_frame(data):
                             print(f'👋 Unstable (raw: {prediction["letter"]} {prediction["confidence"]:.1%})')
         else:
             # No hand detected - clear buffer
-            buffer.clear()
             smoother.no_hand_detected()
             if result["hands_detected"] == 0:
                 print("👋 No hand detected")
