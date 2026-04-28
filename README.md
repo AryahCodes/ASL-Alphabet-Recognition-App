@@ -44,7 +44,7 @@ An interactive American Sign Language (ASL) learning application using real-time
   - 900 → 400 → 200 → 24 neurons
   - Batch normalization + Dropout
   - ReLU and Tanh activations
-- **Features:** 78 engineered features
+- **Features:** 72 engineered features
   - Z-score normalized coordinates
   - Finger angles and extension ratios
   - Inter-finger spacing
@@ -105,7 +105,7 @@ Visit `http://localhost:3000`
 MediaPipe detects 21 hand landmarks in real-time from webcam feed
 
 ### 2. Feature Extraction
-- Extract 78 features from landmarks
+- Extract 72 features from landmarks
 - Apply z-score normalization
 - Calculate finger angles and extensions
 
@@ -118,7 +118,7 @@ Temporal Smoothing (7 frames) → Confidence Threshold (50%) → Display
 
 ### 4. Model Architecture
 ```python
-Input (78 features)
+Input (72 features)
     ↓
 Dense(900) + BatchNorm + Dropout(0.15)
     ↓
@@ -209,6 +209,146 @@ Averages landmarks over 10 frames before prediction for stability
 ## 📄 License
 
 MIT License
+
+## Running Tests
+
+```bash
+cd backend
+pip install pytest flask flask-socketio flask-cors numpy scikit-learn
+pytest tests/ -v
+```
+
+The test suite (60 tests) runs without a GPU, webcam, or model file. Heavy dependencies (mediapipe, tensorflow, cv2) are stubbed at import time.
+
+## Metrics
+
+While the server is running, call:
+
+```bash
+curl http://localhost:5001/metrics
+```
+
+Returns live counters for frames received/processed/dropped, active client count, and inference latency (mean, median, min, max, p95 over the last 200 inferences). See `docs/benchmarking.md` for field definitions and derived metrics.
+
+## Benchmarking
+
+### Direct inference benchmark (no server or webcam needed)
+
+Times `FeatureExtractor.extract_features()` + `model.predict()` directly on saved landmark data:
+
+```bash
+python run_real_benchmark.py --n 1000
+```
+
+Measured results (3 independent 1,000-sample runs on M-series Mac CPU):
+
+| Metric | Run 1 | Run 2 | Run 3 |
+|--------|-------|-------|-------|
+| Processed FPS | 48.3 | 48.0 | 47.5 |
+| Median latency (ms) | 20.1 | 20.1 | 20.2 |
+| P95 latency (ms) | 22.7 | 22.3 | 23.6 |
+| Failure rate | 0% | 0% | 0% |
+
+> These are **direct inference** numbers only — no MediaPipe image detection, SocketIO, or frame buffering overhead. Full end-to-end latency will be higher.
+
+Results are saved to `benchmark_results/direct_inference_<timestamp>.json`.
+
+### Full pipeline benchmark (requires running server)
+
+Run the benchmark client against a running server:
+
+```bash
+python benchmark_client.py --frames 200 --url http://localhost:5001
+```
+
+Results are printed to stdout and by default saved as a timestamped JSON report:
+
+```
+benchmark_results/benchmark_20260427T120000Z.json
+```
+
+Additional options:
+
+```bash
+# Disable saving
+python benchmark_client.py --no-save
+
+# Annotate the run with environment notes
+python benchmark_client.py --env "M2 MacBook, Python 3.11, gunicorn"
+```
+
+Reports include all `/metrics` counters, `processed_fps`, `failure_rate_pct`, and full latency stats (mean, median, min, max, p95). JSON files are excluded from git. See [docs/benchmarking.md](docs/benchmarking.md) for full field reference.
+
+## Smoothing Ablation
+
+Compare the effect of different temporal smoothing window sizes on prediction stability without needing a webcam, model, or server:
+
+```bash
+python smoothing_ablation.py
+```
+
+Prints a table of `stable_pct`, `flicker_rate`, `changes_per_second`, and `avg_confidence` for these configurations:
+
+| Config | Notes |
+|--------|-------|
+| `none (raw)` | Raw pass-through above confidence threshold |
+| `window=3` | Requires unanimous agreement (very conservative) |
+| `window=5` | Moderate smoothing |
+| `window=7 (current)` | App default — 40% majority of 7 frames |
+| `window=10` | More smoothing, higher latency |
+
+Results are saved to `eval_results/` as a JSON file. No dependencies beyond the standard library.
+
+## Live Demo Testing
+
+Use `docs/demo_testing.md` to record and accumulate repeated live webcam sessions.
+
+**Workflow:**
+1. Start the backend and open the frontend in a browser.
+2. Run a live session (60–120 seconds) with real hand signs.
+3. Run `python benchmark_client.py --env "your machine"` to capture `/metrics` into a timestamped JSON report.
+4. Fill in one row of the table in [docs/demo_testing.md](docs/demo_testing.md) per session.
+
+After >= 3 sessions you can cite median/p95 latency and processed FPS as measured values. After >= 5 sessions you can cite stability and flicker behavior.
+
+## Running with Docker
+
+Build the backend image (from repo root):
+
+```bash
+docker build -t signapp-backend ./backend
+```
+
+Run with model files volume-mounted at runtime:
+
+```bash
+docker run -p 5001:5001 \
+  -v $(pwd)/backend/models:/app/models \
+  signapp-backend
+```
+
+The `-v` mount is required because model artifacts are excluded from the image (see `.dockerignore`).
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `5001` | Override the listen port via gunicorn `-b` flag |
+
+To bake model files into the image instead of mounting, remove the `models/*.h5`, `models/*.tflite`, and `models/*.pkl` lines from `.dockerignore`.
+
+## What Is Now Measurable
+
+| Claim | Status | How to verify |
+|-------|--------|---------------|
+| Inference latency (mean, median, p95) | Measurable | Run `benchmark_client.py` during a live webcam session |
+| Throughput (processed FPS) | Measurable | Read `processed_fps` from saved JSON report |
+| Failure rate | Measurable | Read `failure_rate_pct` from saved JSON report |
+| Smoothing flicker reduction | Measurable (synthetic) | Run `smoothing_ablation.py` |
+| End-to-end demo stability | Requires real sessions | Follow `docs/demo_testing.md` |
+| Model accuracy (96.86%) | From training evaluation | See training script output |
+
+> Only cite numbers from your own runs. Synthetic benchmark frames (blank images) produce no real latency data — hands must be in frame for inference to occur.
 
 ## 🙏 Acknowledgments
 

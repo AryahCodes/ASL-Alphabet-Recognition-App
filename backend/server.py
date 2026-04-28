@@ -1,7 +1,7 @@
 import eventlet
 eventlet.monkey_patch()  # ✅ must be first before importing Flask / SocketIO
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 from hand_processor import HandProcessor
@@ -9,6 +9,23 @@ from data_collector import DataCollector
 from collections import deque, Counter
 import numpy as np
 import gc
+import threading
+import time
+
+# -------------------------------------------------
+# Metrics
+# -------------------------------------------------
+_server_start_time = time.time()
+_metrics_lock = threading.Lock()
+_metrics = {
+    "frames_received": 0,
+    "frames_processed": 0,
+    "frames_no_hand": 0,
+    "frames_failed": 0,
+    "active_clients": 0,
+}
+_latency_samples = deque(maxlen=200)
+_latency_stats = {"count": 0, "sum": 0.0, "min": None, "max": None}
 
 # -------------------------------------------------
 # Frame Buffer Class (TIER 2)
@@ -214,6 +231,30 @@ gc.collect()
 def test():
     return {"message": "Backend is working!", "status": "success"}
 
+@app.route("/metrics")
+def get_metrics():
+    with _metrics_lock:
+        m = dict(_metrics)
+        stats = dict(_latency_stats)
+        samples = list(_latency_samples)
+    count = stats["count"]
+    if count == 0:
+        lat = {"count": 0, "mean": None, "min": None, "max": None, "p95": None, "median": None}
+    else:
+        lat = {
+            "count": count,
+            "mean": round(stats["sum"] / count, 3),
+            "min": round(stats["min"], 3),
+            "max": round(stats["max"], 3),
+            "p95": round(float(np.percentile(samples, 95)), 3) if samples else None,
+            "median": round(float(np.median(samples)), 3) if samples else None,
+        }
+    return jsonify({
+        **m,
+        "inference_latency_ms": lat,
+        "uptime_seconds": round(time.time() - _server_start_time, 2),
+    })
+
 @app.route("/")
 def home():
     model_type = "Professional Deep Learning" if USE_PROFESSIONAL_MODEL else "RandomForest"
@@ -257,6 +298,9 @@ def handle_connect():
     
     emit("response", {"message": "Connected to backend server!"})
 
+    with _metrics_lock:
+        _metrics["active_clients"] += 1
+
     # Send model status immediately
     sample_counts = data_collector.get_sample_counts()
     model_type = "professional" if USE_PROFESSIONAL_MODEL else "randomforest"
@@ -282,6 +326,8 @@ def handle_disconnect():
         del client_smoothers[client_id]
     if client_id in client_buffers:
         del client_buffers[client_id]
+    with _metrics_lock:
+        _metrics["active_clients"] = max(0, _metrics["active_clients"] - 1)
 
 @socketio.on("test_message")
 def handle_test_message(data):
@@ -300,6 +346,8 @@ def handle_process_frame(data):
         client_id = request.sid
         frame_data = data.get("frame")
         print("📷 Frame received")
+        with _metrics_lock:
+            _metrics["frames_received"] += 1
 
         # Ensure client has smoother and buffer
         if client_id not in client_smoothers:
@@ -333,7 +381,16 @@ def handle_process_frame(data):
                 
                 if avg_landmarks:
                     # Get raw prediction (will use z-score normalization internally)
+                    _t0 = time.perf_counter()
                     prediction = letter_classifier.predict(avg_landmarks)
+                    _lat_ms = (time.perf_counter() - _t0) * 1000
+                    with _metrics_lock:
+                        _metrics["frames_processed"] += 1
+                        _latency_stats["count"] += 1
+                        _latency_stats["sum"] += _lat_ms
+                        _latency_stats["min"] = _lat_ms if _latency_stats["min"] is None else min(_latency_stats["min"], _lat_ms)
+                        _latency_stats["max"] = _lat_ms if _latency_stats["max"] is None else max(_latency_stats["max"], _lat_ms)
+                        _latency_samples.append(_lat_ms)
 
                     print("🔍 Prediction: ", prediction)
                     
@@ -373,11 +430,15 @@ def handle_process_frame(data):
             smoother.no_hand_detected()
             if result["hands_detected"] == 0:
                 print("👋 No hand detected")
+                with _metrics_lock:
+                    _metrics["frames_no_hand"] += 1
 
         # Send back to frontend
         emit("hand_landmarks", result)
 
     except Exception as e:
+        with _metrics_lock:
+            _metrics["frames_failed"] += 1
         print(f"❌ Error in process_frame: {str(e)}")
         import traceback
         traceback.print_exc()

@@ -93,3 +93,7 @@ asl-alphabet.zip
 backend/models/**
 !backend/models/professional_model.h5
 backend/convert_to_tflite.py
+
+# Benchmark and ablation output files (keep .gitkeep, exclude actual results)
+benchmark_results/*.json
+eval_results/*.json

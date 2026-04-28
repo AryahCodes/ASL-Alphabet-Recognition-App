@@ -44,7 +44,7 @@ class FeatureExtractor:
             landmarks: List of 21 landmarks with x, y, z coordinates
             
         Returns:
-            numpy array of z-score normalized features (74 features total)
+            numpy array of z-score normalized features (72 features total)
         """
         if not landmarks or len(landmarks) != 21:
             return None
@@ -118,11 +118,11 @@ class FeatureExtractor:
             features.append(extension_ratio)
         
         # ========================================
-        # NEW: FINGER ANGLES (15 features)
+        # NEW: FINGER ANGLES (10 features)
         # This helps distinguish D/M/N/G better!
         # ========================================
-        
-        # 6. Finger bend angles at each joint (15 features: 5 fingers × 3 joints)
+
+        # 6. Finger bend angles per finger (10 features: 5 fingers × 2 angles each)
         for chain in finger_chains:
             # For each finger, calculate angles at the 3 joints
             for i in range(len(chain) - 2):
@@ -143,11 +143,11 @@ class FeatureExtractor:
         features.append(palm_size)
         
         # ========================================
-        # NEW: INTER-FINGER ANGLES (4 features)
+        # NEW: INTER-FINGER ANGLES (3 features)
         # Angles between adjacent fingers - helps with D/M/N
         # ========================================
-        
-        # 9. Angles between adjacent finger bases (4 features)
+
+        # 9. Angles between adjacent finger bases (3 features)
         finger_bases = [5, 9, 13, 17]  # Base of index, middle, ring, pinky
         for i in range(len(finger_bases) - 1):
             angle = self.calculate_angle(
@@ -157,7 +157,7 @@ class FeatureExtractor:
             )
             features.append(angle)
         
-        # Total features: 42 + 5 + 4 + 5 + 15 + 2 + 1 + 4 = 78 features
+        # Total features: 42 + 5 + 4 + 5 + 10 + 2 + 1 + 3 = 72 features
         return np.array(features, dtype=np.float32)
     
     def extract_batch(self, landmarks_list):

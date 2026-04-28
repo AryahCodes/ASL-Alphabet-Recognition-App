@@ -1,0 +1,30 @@
+# Tests
+tests/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Model artifacts (mount at runtime via -v)
+models/*.h5
+models/*.tflite
+models/*.pkl
+
+# Training scripts
+train_*.py
+convert_to_tflite.py
+
+# Benchmarks and eval results
+benchmark_results/
+eval_results/
+
+# Docs
+docs/
+
+# Misc
+*.md
+*.log
+.git/
+.DS_Store
