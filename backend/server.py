@@ -9,6 +9,8 @@ from data_collector import DataCollector
 from collections import deque, Counter
 import numpy as np
 import gc
+import os
+import sys
 import threading
 import time
 
@@ -26,6 +28,20 @@ _metrics = {
 }
 _latency_samples = deque(maxlen=200)
 _latency_stats = {"count": 0, "sum": 0.0, "min": None, "max": None}
+
+APP_VERSION = os.environ.get("SIGNAPP_VERSION", "3.1")
+BUILD_SHA = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("SIGNAPP_GIT_SHA")
+TRAINING_ENABLED = os.environ.get("SIGNAPP_ENABLE_TRAINING", "false").lower() in {
+    "1", "true", "yes",
+}
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "SIGNAPP_CORS_ORIGINS",
+        "http://localhost:3000,https://signapp-frontend.vercel.app",
+    ).split(",")
+    if origin.strip()
+]
 
 # -------------------------------------------------
 # Frame Buffer Class (TIER 2)
@@ -158,13 +174,13 @@ class PredictionSmoother:
 # App and Socket.IO setup
 # -------------------------------------------------
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}})
 
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=ALLOWED_ORIGINS,
     async_mode="eventlet",
-    max_http_buffer_size=10 * 1024 * 1024,  # 10MB for images
+    max_http_buffer_size=2 * 1024 * 1024,
     ping_interval=10,
     ping_timeout=25
 )
@@ -179,37 +195,37 @@ data_collector = DataCollector()
 USE_PROFESSIONAL_MODEL = True
 
 print("=" * 60)
-print("🚀 Sign Language App - Backend Server")
+print("Sign Language App - Backend Server")
 print("=" * 60)
 
 if USE_PROFESSIONAL_MODEL:
     try:
         from professional_letter_classifier import ProfessionalLetterClassifier
         letter_classifier = ProfessionalLetterClassifier()
-        print("🧠 Using: Professional Deep Learning Model (TensorFlow/Keras)")
+        print(f"Using: Professional model ({letter_classifier.backend})")
     except ImportError:
-        print("⚠️  professional_letter_classifier.py not found!")
-        print("⚠️  Falling back to RandomForest model...")
+        print("professional_letter_classifier.py not found; falling back to RandomForest model")
         from letter_classifier import LetterClassifier
         letter_classifier = LetterClassifier()
-        print("🌲 Using: RandomForest Model (Fallback)")
+        print("Using: RandomForest Model (Fallback)")
 else:
     from letter_classifier import LetterClassifier
     letter_classifier = LetterClassifier()
-    print("🌲 Using: RandomForest Model")
+    print("Using: RandomForest Model")
 
 # Per-client smoothers and buffers
 client_smoothers = {}
 client_buffers = {}
+client_processing = set()
 
 # Load model
-model_loaded = letter_classifier.load_model()
+letter_classifier.load_model()
 
 if letter_classifier.is_trained:
-    print(f"✅ Model loaded successfully!")
-    print(f"✅ Can recognize: {sorted(letter_classifier.labels)}")
+    print("Model loaded successfully")
+    print(f"Can recognize: {sorted(letter_classifier.labels)}")
 else:
-    print("⚠️  No model loaded!")
+    print("No recognition model loaded")
     if USE_PROFESSIONAL_MODEL:
         print("⚠️  Train the professional model first:")
         print("    python train_professional_kaggle.py")
@@ -224,12 +240,98 @@ print("=" * 60)
 
 gc.collect()
 
+
+def _model_status_payload():
+    sample_counts = data_collector.get_sample_counts()
+    if hasattr(letter_classifier, "status"):
+        model = letter_classifier.status()
+    else:
+        model = {
+            "backend": "randomforest",
+            "loaded": bool(letter_classifier.is_trained),
+            "ready": bool(letter_classifier.is_trained),
+            "label_count": len(letter_classifier.labels),
+            "labels": sorted(letter_classifier.labels) if letter_classifier.is_trained else [],
+            "expected_input_shape": [None, 72],
+            "output_shape": [None, len(letter_classifier.labels)] if letter_classifier.labels else None,
+            "initialization_error": None if letter_classifier.is_trained else "Model not loaded",
+        }
+
+    return {
+        "is_trained": bool(letter_classifier.is_trained),
+        "ready": bool(letter_classifier.is_trained),
+        "recognition_available": bool(letter_classifier.is_trained),
+        "model_type": "professional" if USE_PROFESSIONAL_MODEL else "randomforest",
+        "sample_counts": sample_counts,
+        **model,
+    }
+
+
+def _service_status_payload():
+    model = _model_status_payload()
+    hand_tracking_ready = bool(getattr(hand_processor, "ready", False))
+    ready = bool(model["ready"] and hand_tracking_ready)
+    return {
+        "service": "signapp-backend",
+        "live": True,
+        "ready": ready,
+        "recognition_available": ready,
+        "training_enabled": TRAINING_ENABLED,
+        "version": APP_VERSION,
+        "git_sha": BUILD_SHA,
+        "python_version": sys.version.split()[0],
+        "uptime_seconds": round(time.time() - _server_start_time, 2),
+        "model": {
+            "backend": model["backend"],
+            "loaded": model["loaded"],
+            "ready": model["ready"],
+            "label_count": model["label_count"],
+            "expected_input_shape": model["expected_input_shape"],
+            "output_shape": model["output_shape"],
+            "initialization_error": model["initialization_error"],
+        },
+        "hand_tracking": {
+            "ready": hand_tracking_ready,
+            "initialization_error": (
+                "Hand tracking initialization failed; check server logs."
+                if getattr(hand_processor, "initialization_error", None) else None
+            ),
+        },
+    }
+
+
 # -------------------------------------------------
 # REST API endpoints
 # -------------------------------------------------
 @app.route("/test")
 def test():
-    return {"message": "Backend is working!", "status": "success"}
+    status = _service_status_payload()
+    return {
+        "message": "Backend process is live. Use /ready for recognition readiness.",
+        "status": "success",
+        "live": True,
+        "ready": status["ready"],
+    }
+
+@app.route("/live")
+def live():
+    return jsonify({"live": True, "service": "signapp-backend"})
+
+@app.route("/ready")
+def ready():
+    status = _service_status_payload()
+    payload = {
+        "service": status["service"],
+        "ready": status["ready"],
+        "recognition_available": status["recognition_available"],
+        "model_ready": status["model"]["ready"],
+        "hand_tracking_ready": status["hand_tracking"]["ready"],
+    }
+    return jsonify(payload), 200 if status["ready"] else 503
+
+@app.route("/version")
+def version():
+    return jsonify(_service_status_payload())
 
 @app.route("/metrics")
 def get_metrics():
@@ -257,25 +359,18 @@ def get_metrics():
 
 @app.route("/")
 def home():
-    model_type = "Professional Deep Learning" if USE_PROFESSIONAL_MODEL else "RandomForest"
     return {
         "message": "Sign Language App API",
-        "version": "3.0 - Professional Grade",
-        "model_type": model_type,
+        "version": APP_VERSION,
+        "ready": _service_status_payload()["ready"],
+        "model_type": "professional" if USE_PROFESSIONAL_MODEL else "randomforest",
         "enhancements": ["Temporal Smoothing", "Z-Score Normalization", "Frame Buffering"]
     }
 
 @app.route("/model/status")
 def model_status():
     """Get model training status"""
-    sample_counts = data_collector.get_sample_counts()
-    model_type = "professional" if USE_PROFESSIONAL_MODEL else "randomforest"
-    return {
-        "is_trained": letter_classifier.is_trained,
-        "model_type": model_type,
-        "labels": sorted(letter_classifier.labels) if letter_classifier.is_trained else [],
-        "sample_counts": sample_counts,
-    }
+    return jsonify(_model_status_payload())
 
 # -------------------------------------------------
 # Socket.IO events
@@ -283,7 +378,7 @@ def model_status():
 @socketio.on("connect")
 def handle_connect():
     client_id = request.sid
-    print(f"✅ Client connected! ID: {client_id}")
+    print(f"Client connected: {client_id}")
     
     # Create smoother and buffer for this client
     client_smoothers[client_id] = PredictionSmoother(
@@ -301,20 +396,7 @@ def handle_connect():
     with _metrics_lock:
         _metrics["active_clients"] += 1
 
-    # Send model status immediately
-    sample_counts = data_collector.get_sample_counts()
-    model_type = "professional" if USE_PROFESSIONAL_MODEL else "randomforest"
-    emit(
-        "model_status",
-        {
-            "is_trained": letter_classifier.is_trained,
-            "model_type": model_type,
-            "labels": sorted(letter_classifier.labels)
-            if letter_classifier.is_trained
-            else [],
-            "sample_counts": sample_counts,
-        },
-    )
+    emit("model_status", _model_status_payload())
 
 @socketio.on("disconnect")
 def handle_disconnect():
@@ -326,6 +408,7 @@ def handle_disconnect():
         del client_smoothers[client_id]
     if client_id in client_buffers:
         del client_buffers[client_id]
+    client_processing.discard(client_id)
     with _metrics_lock:
         _metrics["active_clients"] = max(0, _metrics["active_clients"] - 1)
 
@@ -344,10 +427,36 @@ def handle_process_frame(data):
     """
     try:
         client_id = request.sid
-        frame_data = data.get("frame")
-        print("📷 Frame received")
+        if client_id in client_processing:
+            emit(
+                "hand_landmarks",
+                {
+                    "success": False,
+                    "error": "Previous frame is still processing; dropping this frame",
+                    "retryable": True,
+                    "hands_detected": 0,
+                    "hands": [],
+                },
+            )
+            return
+
+        client_processing.add(client_id)
+        frame_data = (data or {}).get("frame")
         with _metrics_lock:
             _metrics["frames_received"] += 1
+
+        if not letter_classifier.is_trained:
+            emit(
+                "hand_landmarks",
+                {
+                    "success": False,
+                    "error": "Recognition model is not ready",
+                    "model_status": _model_status_payload(),
+                    "hands_detected": 0,
+                    "hands": [],
+                },
+            )
+            return
 
         # Ensure client has smoother and buffer
         if client_id not in client_smoothers:
@@ -361,8 +470,6 @@ def handle_process_frame(data):
         # Process the frame
         result = hand_processor.process_frame(frame_data)
 
-        print("👋 Hand detected: ", result["hands_detected"])
-
         # If hand detected, add to buffer
         if result["success"] and result["hands_detected"] > 0:
             first_hand = result["hands"][0]
@@ -370,11 +477,8 @@ def handle_process_frame(data):
             
             # Add frame to buffer
             buffer.add_frame(landmarks)
-            print("📦 Buffer size:", len(buffer.buffer))
-
             # Only make prediction if buffer is ready and it's time
             should_predict = buffer.should_predict()
-            print("🧠 Should predict:", should_predict)
             if letter_classifier.is_trained and should_predict:
                 # Get averaged landmarks from buffer
                 avg_landmarks = buffer.get_average_landmarks()
@@ -392,8 +496,6 @@ def handle_process_frame(data):
                         _latency_stats["max"] = _lat_ms if _latency_stats["max"] is None else max(_latency_stats["max"], _lat_ms)
                         _latency_samples.append(_lat_ms)
 
-                    print("🔍 Prediction: ", prediction)
-                    
                     if prediction["success"]:
 
                         result["letter_prediction"] = prediction
@@ -416,20 +518,19 @@ def handle_process_frame(data):
                                 "raw_confidence": prediction["confidence"],
                                 "buffer_size": len(buffer.buffer)
                             }
-                            
-                            print(f'👋 Smoothed: {smoothed_letter} ({smoothed_conf:.1%}) | Raw: {prediction["letter"]} ({prediction["confidence"]:.1%}) | Buffer: {len(buffer.buffer)}')
                         else:
                             # Prediction below threshold or not stable enough
                             result["letter_prediction"] = {
                                 "success": False,
                                 "message": "Hold steady..."
                             }
-                            print(f'👋 Unstable (raw: {prediction["letter"]} {prediction["confidence"]:.1%})')
+                            pass
+                    else:
+                        result["letter_prediction"] = prediction
         else:
             # No hand detected - clear buffer
             smoother.no_hand_detected()
             if result["hands_detected"] == 0:
-                print("👋 No hand detected")
                 with _metrics_lock:
                     _metrics["frames_no_hand"] += 1
 
@@ -442,10 +543,17 @@ def handle_process_frame(data):
         print(f"❌ Error in process_frame: {str(e)}")
         import traceback
         traceback.print_exc()
-        emit(
-            "hand_landmarks",
-            {"success": False, "error": str(e), "hands_detected": 0, "hands": []},
-        )
+        emit("hand_landmarks", {
+            "success": False,
+            "error": "Frame processing failed; check server logs",
+            "hands_detected": 0,
+            "hands": [],
+        })
+    finally:
+        try:
+            client_processing.discard(request.sid)
+        except Exception:
+            pass
 
 @socketio.on("save_training_sample")
 def handle_save_sample(data):

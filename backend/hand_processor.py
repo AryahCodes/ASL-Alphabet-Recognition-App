@@ -6,14 +6,23 @@ import base64
 class HandProcessor:
     def __init__(self):
         """Initialize MediaPipe Hands"""
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        print("✅ HandProcessor initialized")
+        self.mp_hands = None
+        self.hands = None
+        self.ready = False
+        self.initialization_error = None
+        try:
+            self.mp_hands = mp.solutions.hands
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self.ready = True
+            print("HandProcessor initialized")
+        except Exception as exc:
+            self.initialization_error = f"{exc.__class__.__name__}: {exc}"
+            print(f"HandProcessor initialization failed: {self.initialization_error}")
     
     def process_frame(self, frame_data):
         """
@@ -74,15 +83,16 @@ class HandProcessor:
                 }
                 
         except Exception as e:
-            print(f"❌ Error processing frame: {str(e)}")
+            print(f"Error processing frame: {str(e)}")
             return {
                 'success': False,
-                'error': str(e),
+                'error': str(e) if isinstance(e, ValueError) else 'Frame processing failed',
                 'hands_detected': 0,
                 'hands': []
             }
     
     def cleanup(self):
         """Clean up resources"""
-        self.hands.close()
-        print("🧹 HandProcessor cleaned up")
+        if self.hands is not None:
+            self.hands.close()
+        print("HandProcessor cleaned up")
