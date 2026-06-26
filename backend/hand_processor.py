@@ -2,6 +2,10 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import base64
+import binascii
+
+
+MAX_FRAME_BYTES = 1_500_000
 
 class HandProcessor:
     def __init__(self):
@@ -35,10 +39,31 @@ class HandProcessor:
             dict with landmarks and metadata
         """
         try:
-            # Decode base64 image
-            img_bytes = base64.b64decode(frame_data.split(',')[1])
+            if not self.ready or self.hands is None:
+                raise RuntimeError(f"Hand processor is not ready: {self.initialization_error}")
+
+            if not frame_data or not isinstance(frame_data, str):
+                raise ValueError("Missing frame data")
+            if "," not in frame_data:
+                raise ValueError("Frame must be a data URL")
+
+            encoded = frame_data.split(",", 1)[1]
+            estimated_size = (len(encoded) * 3) // 4
+            if estimated_size > MAX_FRAME_BYTES:
+                raise ValueError("Frame payload is too large")
+
+            try:
+                img_bytes = base64.b64decode(encoded, validate=True)
+            except binascii.Error as exc:
+                raise ValueError("Frame is not valid base64") from exc
+
+            if len(img_bytes) > MAX_FRAME_BYTES:
+                raise ValueError("Frame payload is too large")
+
             nparr = np.frombuffer(img_bytes, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                raise ValueError("Frame could not be decoded")
 
             # Convert BGR to RGB (MediaPipe uses RGB)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

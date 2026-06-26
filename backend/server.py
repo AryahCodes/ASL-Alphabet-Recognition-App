@@ -559,36 +559,48 @@ def handle_process_frame(data):
 def handle_save_sample(data):
     """Save a training sample"""
     try:
+        if not TRAINING_ENABLED:
+            emit("sample_saved", {"success": False, "error": "Training data collection is disabled"})
+            return
+
+        data = data or {}
         landmarks = data.get("landmarks")
-        label = data.get("label", "").upper()
+        label = data.get("label", "")
 
         if not landmarks or not label:
             emit("sample_saved", {"success": False, "error": "Missing landmarks or label"})
             return
 
-        filepath = data_collector.save_sample(landmarks, label)
+        data_collector.save_sample(landmarks, label)
         sample_counts = data_collector.get_sample_counts()
 
-        print(f"💾 Saved training sample: {label} (total: {sample_counts.get(label, 0)})")
+        saved_label = data_collector.validate_label(label)
+        print(f"Saved training sample: {saved_label} (total: {sample_counts.get(saved_label, 0)})")
 
         emit(
             "sample_saved",
             {
                 "success": True,
-                "label": label,
-                "filepath": filepath,
+                "label": saved_label,
                 "sample_counts": sample_counts,
             },
         )
 
-    except Exception as e:
+    except ValueError as e:
         print(f"❌ Error saving sample: {str(e)}")
         emit("sample_saved", {"success": False, "error": str(e)})
+    except Exception as e:
+        print(f"❌ Error saving sample: {str(e)}")
+        emit("sample_saved", {"success": False, "error": "Sample could not be saved"})
 
 @socketio.on("train_model")
 def handle_train_model(data):
     """Train the letter classifier (only works with RandomForest model)"""
     try:
+        if not TRAINING_ENABLED:
+            emit("training_complete", {"success": False, "error": "Training is disabled"})
+            return
+
         if USE_PROFESSIONAL_MODEL:
             emit("training_complete", {
                 "success": False,
@@ -633,7 +645,7 @@ def handle_train_model(data):
         print(f"❌ Error training model: {str(e)}")
         import traceback
         traceback.print_exc()
-        emit("training_complete", {"success": False, "error": str(e)})
+        emit("training_complete", {"success": False, "error": "Training failed; check server logs"})
 
 @socketio.on_error_default
 def default_error_handler(e):
