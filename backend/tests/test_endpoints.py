@@ -77,6 +77,36 @@ class TestMetricsEndpoint:
         assert data["uptime_seconds"] >= 0
 
 
+class TestReadinessEndpoints:
+    def test_live_status_200(self, client):
+        response = client.get("/live")
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["live"] is True
+
+    def test_ready_reflects_model_state(self, client):
+        response = client.get("/ready")
+        data = json.loads(response.data)
+        expected_status = 200 if data["ready"] else 503
+        assert response.status_code == expected_status
+        assert "model_ready" in data
+        assert "hand_tracking_ready" in data
+        assert "recognition_available" in data
+
+    def test_version_contains_non_secret_runtime_fields(self, client):
+        response = client.get("/version")
+        assert response.status_code == 200
+        data = json.loads(response.data)
+        assert data["service"] == "signapp-backend"
+        assert "python_version" in data
+        assert "version" in data
+        assert "model" in data
+        assert "backend" in data["model"]
+        assert "hand_tracking" in data
+        assert "ready" in data["hand_tracking"]
+        assert "cors_origins" not in data
+
+
 class TestModelStatusEndpoint:
     def test_model_status_200(self, client):
         response = client.get("/model/status")
@@ -86,9 +116,15 @@ class TestModelStatusEndpoint:
         response = client.get("/model/status")
         data = json.loads(response.data)
         assert "is_trained" in data
+        assert "ready" in data
+        assert "recognition_available" in data
         assert "model_type" in data
         assert "labels" in data
         assert "sample_counts" in data
+        assert "backend" in data
+        assert "expected_input_shape" in data
+        assert "model_path" not in data
+        assert "model_filename" not in data
 
     def test_model_status_is_trained_is_bool(self, client):
         response = client.get("/model/status")
