@@ -2,20 +2,13 @@ import { io } from 'socket.io-client';
 import BACKEND_URL from './config';
 
 const socket = io(BACKEND_URL, {
-  transports: ['polling', 'websocket'],
+  transports: ['websocket', 'polling'],
   reconnection: true,
   reconnectionDelay: 1000,
   reconnectionDelayMax: 5000,
   reconnectionAttempts: Infinity,
   timeout: 30000,
-});
-
-socket.on('connect', () => {
-  console.log('Socket connected! ID:', socket.id);
-});
-
-socket.on('disconnect', (reason) => {
-  console.log('Socket disconnected! Reason:', reason);
+  autoConnect: true,
 });
 
 socket.on('connect_error', (error) => {

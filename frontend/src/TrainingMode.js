@@ -1,9 +1,14 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Webcam from 'react-webcam';
 import socket from './socket';
 
-function TrainingMode() {
+const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M',
+  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y'];
+
+function TrainingMode({ backend }) {
   const webcamRef = useRef(null);
+  const intervalRef = useRef(null);
+  const awaitingFrameRef = useRef(false);
   const [currentLetter, setCurrentLetter] = useState('A');
   const [sampleCounts, setSampleCounts] = useState({});
   const [isCapturing, setIsCapturing] = useState(false);
@@ -11,316 +16,197 @@ function TrainingMode() {
   const [handsDetected, setHandsDetected] = useState(0);
   const [currentHandData, setCurrentHandData] = useState(null);
   const [isTraining, setIsTraining] = useState(false);
-  const [modelStatus, setModelStatus] = useState({ is_trained: false, labels: [] });
+  const [cameraState, setCameraState] = useState('pending');
+  const [cameraError, setCameraError] = useState(null);
+  const [messageType, setMessageType] = useState('info');
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const trainingEnabled = backend.serviceStatus?.training_enabled === true;
 
-  const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 
-                   'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y'];
-
-  // Listen for hand landmarks
   useEffect(() => {
-    socket.on('hand_landmarks', (data) => {
+    const handleHandLandmarks = (data) => {
+      awaitingFrameRef.current = false;
       if (data.success && data.hands_detected > 0) {
         setHandsDetected(data.hands_detected);
-        setCurrentHandData(data.hands[0]); // Store first hand
+        setCurrentHandData(data.hands[0]);
       } else {
         setHandsDetected(0);
         setCurrentHandData(null);
       }
-    });
-
-    socket.on('sample_saved', (data) => {
+    };
+    const handleSampleSaved = (data) => {
       if (data.success) {
         setSampleCounts(data.sample_counts);
-        setMessage(`✅ Saved sample for letter "${data.label}" (Total: ${data.sample_counts[data.label]})`);
-        setTimeout(() => setMessage(''), 3000);
+        setMessage(`Saved sample for ${data.label}. Total: ${data.sample_counts[data.label]}`);
+        setMessageType('info');
       } else {
-        setMessage(`❌ Error: ${data.error}`);
+        setMessage(`Sample was not saved: ${data.error}`);
+        setMessageType('error');
       }
-    });
-
-    socket.on('training_complete', (data) => {
+    };
+    const handleTrainingComplete = (data) => {
       setIsTraining(false);
-      if (data.success) {
-        setMessage(`✅ Training complete! Model can recognize: ${data.labels.join(', ')}`);
-        setModelStatus({ is_trained: true, labels: data.labels });
-      } else {
-        setMessage(`❌ Training failed: ${data.error}`);
-      }
-    });
+      setMessage(data.success ? `Training complete for ${data.labels.join(', ')}` : `Training unavailable: ${data.error}`);
+      setMessageType(data.success ? 'info' : 'error');
+    };
+    const handleModelStatus = (data) => setSampleCounts(data.sample_counts || {});
 
-    socket.on('model_status', (data) => {
-      setModelStatus(data);
-      setSampleCounts(data.sample_counts);
-    });
+    socket.on('hand_landmarks', handleHandLandmarks);
+    socket.on('sample_saved', handleSampleSaved);
+    socket.on('training_complete', handleTrainingComplete);
+    socket.on('model_status', handleModelStatus);
 
     return () => {
-      socket.off('hand_landmarks');
-      socket.off('sample_saved');
-      socket.off('training_complete');
-      socket.off('model_status');
+      socket.off('hand_landmarks', handleHandLandmarks);
+      socket.off('sample_saved', handleSampleSaved);
+      socket.off('training_complete', handleTrainingComplete);
+      socket.off('model_status', handleModelStatus);
     };
   }, []);
 
-  // Start capturing frames
-  const startCapturing = () => {
-    setIsCapturing(true);
-    const interval = setInterval(() => {
-      if (webcamRef.current) {
-        const imageSrc = webcamRef.current.getScreenshot();
-        if (imageSrc) {
-          socket.emit('process_frame', { frame: imageSrc });
-        }
-      }
-    }, 100);
-
-    return () => clearInterval(interval);
-  };
-
   useEffect(() => {
-    if (isCapturing) {
-      const cleanup = startCapturing();
-      return cleanup;
+    if (!isCapturing) {
+      awaitingFrameRef.current = false;
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      return undefined;
     }
+
+    intervalRef.current = setInterval(() => {
+      if (!webcamRef.current || !socket.connected || awaitingFrameRef.current) return;
+      const imageSrc = webcamRef.current.getScreenshot();
+      if (imageSrc) {
+        awaitingFrameRef.current = true;
+        socket.emit('process_frame', { frame: imageSrc });
+      }
+    }, 180);
+
+    return () => {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    };
   }, [isCapturing]);
 
   const saveSample = () => {
     if (!currentHandData) {
-      setMessage('❌ No hand detected! Show your hand to the camera.');
-      setTimeout(() => setMessage(''), 3000);
+      setMessage('No hand detected. Show your hand clearly before saving.');
+      setMessageType('error');
       return;
     }
-
     socket.emit('save_training_sample', {
       landmarks: currentHandData.landmarks,
-      label: currentLetter
+      label: currentLetter,
     });
   };
 
   const trainModel = () => {
-    const totalSamples = Object.values(sampleCounts).reduce((a, b) => a + b, 0);
-    
-    if (totalSamples < 10) {
-      setMessage('❌ Need at least 10 total samples to train! (Recommend 20+ per letter)');
-      setTimeout(() => setMessage(''), 4000);
-      return;
-    }
-
     setIsTraining(true);
-    setMessage('🎓 Training model... This may take a few seconds...');
+    setMessage('Requesting training...');
+    setMessageType('info');
     socket.emit('train_model', {});
   };
 
-  const getSampleCount = (letter) => {
-    return sampleCounts[letter] || 0;
-  };
-
-  const getTotalSamples = () => {
-    return Object.values(sampleCounts).reduce((a, b) => a + b, 0);
-  };
+  const totalSamples = Object.values(sampleCounts).reduce((sum, count) => sum + count, 0);
+  const canCapture = trainingEnabled && backend.socketConnected && cameraState === 'ready';
 
   return (
-    <div style={{ textAlign: 'center', padding: '20px' }}>
-      <h1>🎓 Training Mode - Collect Letter Samples</h1>
-      <p style={{ color: '#666', marginBottom: '20px' }}>
-        Collect samples of different ASL letters to train the recognition model
-      </p>
-
-      {/* Model Status */}
-      <div style={{
-        backgroundColor: modelStatus.is_trained ? '#d4edda' : '#fff3cd',
-        padding: '15px',
-        borderRadius: '10px',
-        marginBottom: '20px',
-        border: `2px solid ${modelStatus.is_trained ? '#28a745' : '#ffc107'}`
-      }}>
-        <strong>Model Status:</strong> {modelStatus.is_trained ? 
-          `✅ Trained (Recognizes: ${modelStatus.labels.join(', ')})` : 
-          '⚠️ Not Trained'}
-        <br />
-        <strong>Total Samples:</strong> {getTotalSamples()}
-      </div>
-
-      {/* Webcam */}
-      <div style={{ marginBottom: '20px' }}>
-        <Webcam
-          ref={webcamRef}
-          screenshotFormat="image/jpeg"
-          style={{
-            width: '640px',
-            height: '480px',
-            border: '3px solid #007bff',
-            borderRadius: '10px'
-          }}
-        />
-        
-        <div style={{
-          marginTop: '10px',
-          padding: '10px',
-          backgroundColor: handsDetected > 0 ? '#d4edda' : '#f8d7da',
-          borderRadius: '8px',
-          display: 'inline-block'
-        }}>
-          {handsDetected > 0 ? '✅ Hand Detected' : '❌ No Hand Detected'}
+    <section className="training-layout" aria-labelledby="training-title">
+      <div className="panel-copy">
+        <p className="eyebrow">Training data</p>
+        <h2 id="training-title">Collect labeled landmark samples.</h2>
+        <p>
+          The deployed professional model is trained offline. This panel is useful for local RandomForest experiments and sample collection.
+        </p>
+        <div className="notice info">
+          Model: {backend.modelReady ? 'ready' : 'not ready'} | Samples: {totalSamples}
         </div>
-      </div>
-
-      {/* Capture Controls */}
-      <div style={{ marginBottom: '20px' }}>
-        {!isCapturing ? (
-          <button
-            onClick={() => setIsCapturing(true)}
-            style={{
-              padding: '15px 30px',
-              fontSize: '18px',
-              backgroundColor: '#28a745',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold'
-            }}
-          >
-            ▶️ Start Capturing
-          </button>
-        ) : (
-          <button
-            onClick={() => setIsCapturing(false)}
-            style={{
-              padding: '15px 30px',
-              fontSize: '18px',
-              backgroundColor: '#dc3545',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold'
-            }}
-          >
-            ⏹️ Stop Capturing
-          </button>
+        {!trainingEnabled && (
+          <div className="notice warning" role="status">
+            Training data collection is disabled on this deployment.
+          </div>
         )}
       </div>
 
-      {/* Letter Selection */}
-      <div style={{
-        backgroundColor: '#f8f9fa',
-        padding: '20px',
-        borderRadius: '10px',
-        marginBottom: '20px'
-      }}>
-        <h3>Select Letter to Capture:</h3>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(60px, 1fr))',
-          gap: '10px',
-          maxWidth: '800px',
-          margin: '0 auto'
-        }}>
-          {letters.map(letter => (
-            <button
-              key={letter}
-              onClick={() => setCurrentLetter(letter)}
-              style={{
-                padding: '15px',
-                fontSize: '20px',
-                fontWeight: 'bold',
-                backgroundColor: currentLetter === letter ? '#007bff' : '#fff',
-                color: currentLetter === letter ? 'white' : '#333',
-                border: '2px solid #007bff',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                position: 'relative'
-              }}
-            >
-              {letter}
-              <div style={{
-                fontSize: '10px',
-                marginTop: '5px',
-                color: currentLetter === letter ? '#fff' : '#666'
-              }}>
-                {getSampleCount(letter)} samples
+      <div className="training-grid">
+        <div className="camera-panel">
+          <div className="camera-stage compact">
+            {cameraEnabled ? (
+              <Webcam
+                ref={webcamRef}
+                audio={false}
+                mirrored
+                screenshotFormat="image/jpeg"
+                screenshotQuality={0.65}
+                videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
+                onUserMedia={() => {
+                  setCameraState('ready');
+                  setCameraError(null);
+                }}
+                onUserMediaError={(error) => {
+                  setCameraState('error');
+                  setCameraError(error.message || 'Camera permission denied.');
+                }}
+                className="camera-video"
+              />
+            ) : (
+              <div className="camera-placeholder">
+                <strong>Camera is off</strong>
+                <span>Enable local training to collect samples.</span>
               </div>
+            )}
+            <div className={`camera-status ${handsDetected > 0 ? 'good' : 'warn'}`}>
+              {handsDetected > 0 ? 'Hand detected' : 'No hand'}
+            </div>
+          </div>
+
+          <div className="control-row">
+            <button
+              className={isCapturing ? 'danger-action' : 'primary-action'}
+              onClick={() => {
+                if (!cameraEnabled) {
+                  setCameraEnabled(true);
+                  setCameraState('pending');
+                  return;
+                }
+                setIsCapturing((value) => !value);
+              }}
+              disabled={!trainingEnabled || (cameraEnabled && !isCapturing && !canCapture)}
+            >
+              {isCapturing ? 'Stop capture' : cameraEnabled ? 'Start capture' : 'Enable camera'}
             </button>
-          ))}
+            <button className="secondary-action" onClick={saveSample} disabled={!isCapturing || handsDetected === 0}>
+              Save {currentLetter}
+            </button>
+          </div>
+          {cameraError && <p className="inline-message error" role="alert">{cameraError}</p>}
         </div>
 
-        <div style={{ marginTop: '20px' }}>
-          <button
-            onClick={saveSample}
-            disabled={!isCapturing || handsDetected === 0}
-            style={{
-              padding: '20px 40px',
-              fontSize: '24px',
-              backgroundColor: (isCapturing && handsDetected > 0) ? '#007bff' : '#6c757d',
-              color: 'white',
-              border: 'none',
-              borderRadius: '10px',
-              cursor: (isCapturing && handsDetected > 0) ? 'pointer' : 'not-allowed',
-              fontWeight: 'bold'
-            }}
-          >
-            💾 Save Sample for "{currentLetter}"
+        <div className="letter-panel">
+          <h3>Select a letter</h3>
+          <div className="letter-grid">
+            {letters.map((letter) => (
+              <button
+                key={letter}
+                type="button"
+                className={currentLetter === letter ? 'letter-button active' : 'letter-button'}
+                onClick={() => setCurrentLetter(letter)}
+              >
+                <span>{letter}</span>
+                <small>{sampleCounts[letter] || 0}</small>
+              </button>
+            ))}
+          </div>
+
+          <button className="secondary-action full-width" onClick={trainModel} disabled={!trainingEnabled || isTraining || totalSamples < 10}>
+            {isTraining ? 'Training...' : 'Train local model'}
           </button>
+          {message && (
+            <p className={messageType === 'error' ? 'inline-message error' : 'inline-message'} role={messageType === 'error' ? 'alert' : 'status'}>
+              {message}
+            </p>
+          )}
         </div>
       </div>
-
-      {/* Train Button */}
-      <div style={{ marginBottom: '20px' }}>
-        <button
-          onClick={trainModel}
-          disabled={isTraining || getTotalSamples() < 10}
-          style={{
-            padding: '20px 40px',
-            fontSize: '20px',
-            backgroundColor: (getTotalSamples() >= 10 && !isTraining) ? '#28a745' : '#6c757d',
-            color: 'white',
-            border: 'none',
-            borderRadius: '10px',
-            cursor: (getTotalSamples() >= 10 && !isTraining) ? 'pointer' : 'not-allowed',
-            fontWeight: 'bold'
-          }}
-        >
-          {isTraining ? '⏳ Training...' : '🎓 Train Model'}
-        </button>
-      </div>
-
-      {/* Message */}
-      {message && (
-        <div style={{
-          padding: '15px',
-          backgroundColor: message.includes('✅') ? '#d4edda' : '#f8d7da',
-          color: message.includes('✅') ? '#155724' : '#721c24',
-          borderRadius: '8px',
-          marginTop: '20px',
-          fontWeight: 'bold'
-        }}>
-          {message}
-        </div>
-      )}
-
-      {/* Instructions */}
-      <div style={{
-        marginTop: '30px',
-        padding: '20px',
-        backgroundColor: '#e7f3ff',
-        borderRadius: '10px',
-        textAlign: 'left',
-        maxWidth: '600px',
-        margin: '30px auto'
-      }}>
-        <h3>📋 Instructions:</h3>
-        <ol style={{ lineHeight: '2' }}>
-          <li>Click "Start Capturing"</li>
-          <li>Select a letter button (e.g., "A")</li>
-          <li>Make the ASL sign for that letter</li>
-          <li>Click "Save Sample" when hand is detected</li>
-          <li>Repeat 20-30 times per letter (vary hand position slightly)</li>
-          <li>Do this for at least 3-5 different letters</li>
-          <li>Click "Train Model" when you have enough samples</li>
-          <li>Go to "Hand Tracking" to test recognition!</li>
-        </ol>
-      </div>
-    </div>
+    </section>
   );
 }
 

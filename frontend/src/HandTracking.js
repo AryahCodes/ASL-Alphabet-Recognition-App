@@ -1,150 +1,109 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Webcam from 'react-webcam';
 import socket from './socket';
 
-function HandTracking() {
+const connections = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  [5, 9], [9, 13], [13, 17],
+];
+
+function HandTracking({ backend }) {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
+  const intervalRef = useRef(null);
+  const awaitingFrameRef = useRef(false);
+  const fpsCounterRef = useRef({ frames: 0, lastTime: Date.now() });
+
   const [isTracking, setIsTracking] = useState(false);
+  const [cameraState, setCameraState] = useState('pending');
+  const [cameraError, setCameraError] = useState(null);
   const [handsDetected, setHandsDetected] = useState(0);
   const [fps, setFps] = useState(0);
   const [predictedLetter, setPredictedLetter] = useState(null);
   const [predictionConfidence, setPredictionConfidence] = useState(0);
-  const intervalRef = useRef(null);
-  const fpsCounterRef = useRef({ frames: 0, lastTime: Date.now() });
+  const [recognitionMessage, setRecognitionMessage] = useState('Show your hand in the camera frame.');
+  const [recognitionError, setRecognitionError] = useState(null);
+  const [cameraEnabled, setCameraEnabled] = useState(false);
 
-  // Draw hand landmarks on canvas
-  const drawHands = (hands) => {
+  const handTrackingError = backend.serviceStatus?.hand_tracking?.initialization_error;
+  const readyToTrack = backend.socketConnected && backend.serviceReady && cameraState === 'ready';
+
+  const primaryStatus = useMemo(() => {
+    if (!backend.socketConnected) return { label: 'Disconnected', tone: 'bad' };
+    if (!backend.modelReady) {
+      return backend.modelStatus.initialization_error
+        ? { label: 'Model error', tone: 'bad' }
+        : { label: 'Model loading', tone: 'warn' };
+    }
+    if (handTrackingError) return { label: 'Tracking error', tone: 'bad' };
+    if (!cameraEnabled) return { label: 'Camera off', tone: 'warn' };
+    if (cameraState === 'error') return { label: 'Camera unavailable', tone: 'bad' };
+    if (cameraState !== 'ready') return { label: 'Camera pending', tone: 'warn' };
+    if (recognitionError) return { label: 'Recognition error', tone: 'bad' };
+    return { label: 'Ready', tone: 'good' };
+  }, [backend.modelReady, backend.modelStatus.initialization_error, backend.socketConnected, cameraEnabled, cameraState, handTrackingError, recognitionError]);
+
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }, []);
+
+  const drawHands = useCallback((hands) => {
     const canvas = canvasRef.current;
     const video = webcamRef.current?.video;
-    
-    if (!canvas || !video) return;
+    if (!canvas || !video || !video.videoWidth) return;
 
     const ctx = canvas.getContext('2d');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-
-    // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw each hand
     hands.forEach((hand) => {
       const landmarks = hand.landmarks;
-      
-      // Draw connections between landmarks
-      const connections = [
-        // Thumb
-        [0, 1], [1, 2], [2, 3], [3, 4],
-        // Index finger
-        [0, 5], [5, 6], [6, 7], [7, 8],
-        // Middle finger
-        [0, 9], [9, 10], [10, 11], [11, 12],
-        // Ring finger
-        [0, 13], [13, 14], [14, 15], [15, 16],
-        // Pinky
-        [0, 17], [17, 18], [18, 19], [19, 20],
-        // Palm
-        [5, 9], [9, 13], [13, 17]
-      ];
+      ctx.strokeStyle = hand.handedness === 'Right' ? '#0f766e' : '#7c3aed';
+      ctx.lineWidth = 3;
 
-      // Draw connections
-      ctx.strokeStyle = hand.handedness === 'Right' ? '#00FF00' : '#FF00FF';
-      ctx.lineWidth = 2;
-      
       connections.forEach(([start, end]) => {
         const startPoint = landmarks[start];
         const endPoint = landmarks[end];
-        
         ctx.beginPath();
         ctx.moveTo(startPoint.x * canvas.width, startPoint.y * canvas.height);
         ctx.lineTo(endPoint.x * canvas.width, endPoint.y * canvas.height);
         ctx.stroke();
       });
 
-      // Draw landmark points
       landmarks.forEach((landmark, index) => {
         const x = landmark.x * canvas.width;
         const y = landmark.y * canvas.height;
-        
         ctx.beginPath();
-        ctx.arc(x, y, 5, 0, 2 * Math.PI);
-        ctx.fillStyle = index === 0 ? '#FF0000' : '#00FFFF'; // Red for wrist, cyan for others
+        ctx.arc(x, y, index === 0 ? 6 : 4, 0, 2 * Math.PI);
+        ctx.fillStyle = index === 0 ? '#ef4444' : '#14b8a6';
         ctx.fill();
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       });
-
-      // Draw hand label
-      const wrist = landmarks[0];
-      ctx.fillStyle = hand.handedness === 'Right' ? '#00FF00' : '#FF00FF';
-      ctx.font = 'bold 20px Arial';
-      ctx.fillText(
-        `${hand.handedness} Hand`,
-        wrist.x * canvas.width - 40,
-        wrist.y * canvas.height - 10
-      );
     });
 
-    // Update FPS counter
-    fpsCounterRef.current.frames++;
+    fpsCounterRef.current.frames += 1;
     const now = Date.now();
     const elapsed = now - fpsCounterRef.current.lastTime;
-    
     if (elapsed >= 1000) {
       setFps(fpsCounterRef.current.frames);
       fpsCounterRef.current.frames = 0;
       fpsCounterRef.current.lastTime = now;
     }
-  };
-
-  // Listen for hand landmarks from backend
-  useEffect(() => {
-    socket.on('hand_landmarks', (data) => {
-      if (data.success && data.hands_detected > 0) {
-        setHandsDetected(data.hands_detected);
-        drawHands(data.hands);
-        
-        // Update letter prediction if available
-        if (data.letter_prediction && data.letter_prediction.success) {
-          setPredictedLetter(data.letter_prediction.letter);
-          setPredictionConfidence(data.letter_prediction.confidence);
-        }
-      } else {
-        setHandsDetected(0);
-        setPredictedLetter(null);
-        setPredictionConfidence(0);
-        // Clear canvas when no hands detected
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
-      }
-    });
-
-    return () => {
-      socket.off('hand_landmarks');
-    };
   }, []);
 
-  // Start tracking
-  const startTracking = () => {
-    setIsTracking(true);
-    
-    intervalRef.current = setInterval(() => {
-      if (webcamRef.current && socket.connected) {
-        const imageSrc = webcamRef.current.getScreenshot();
-        if (imageSrc) {
-          socket.emit('process_frame', { frame: imageSrc });
-        }
-      }
-    }, 100); // Send frame every 100ms (10 FPS)
-  };
-
-  // Stop tracking
-  const stopTracking = () => {
+  const stopTracking = useCallback(() => {
     setIsTracking(false);
+    awaitingFrameRef.current = false;
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -153,190 +112,187 @@ function HandTracking() {
     setFps(0);
     setPredictedLetter(null);
     setPredictionConfidence(0);
-    
-    // Clear canvas
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  };
+    clearCanvas();
+  }, [clearCanvas]);
 
-  // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+    const handleHandLandmarks = (data) => {
+      awaitingFrameRef.current = false;
+      if (!data.success) {
+        setRecognitionError(data.error || 'Recognition failed.');
+        setRecognitionMessage(data.retryable ? 'The backend is catching up.' : 'Recognition is unavailable right now.');
+        setHandsDetected(0);
+        setPredictedLetter(null);
+        setPredictionConfidence(0);
+        clearCanvas();
+        return;
+      }
+
+      setRecognitionError(null);
+      if (data.hands_detected > 0) {
+        setHandsDetected(data.hands_detected);
+        drawHands(data.hands);
+
+        if (data.letter_prediction?.success) {
+          setPredictedLetter(data.letter_prediction.letter);
+          setPredictionConfidence(data.letter_prediction.confidence);
+          setRecognitionMessage('Letter recognized.');
+        } else if (data.letter_prediction?.message) {
+          setRecognitionMessage(data.letter_prediction.message);
+        } else {
+          setRecognitionMessage('Hand detected. Hold steady for a prediction.');
+        }
+      } else {
+        setHandsDetected(0);
+        setPredictedLetter(null);
+        setPredictionConfidence(0);
+        setRecognitionMessage('No hand detected.');
+        clearCanvas();
       }
     };
-  }, []);
+
+    socket.on('hand_landmarks', handleHandLandmarks);
+    return () => socket.off('hand_landmarks', handleHandLandmarks);
+  }, [clearCanvas, drawHands]);
+
+  useEffect(() => {
+    if (!readyToTrack && isTracking) {
+      stopTracking();
+    }
+  }, [isTracking, readyToTrack, stopTracking]);
+
+  useEffect(() => () => stopTracking(), [stopTracking]);
+
+  const startTracking = () => {
+    if (!readyToTrack) return;
+    setIsTracking(true);
+    setRecognitionError(null);
+    setRecognitionMessage('Recognition active.');
+
+    intervalRef.current = setInterval(() => {
+      if (!webcamRef.current || !socket.connected || awaitingFrameRef.current) return;
+      const imageSrc = webcamRef.current.getScreenshot();
+      if (imageSrc) {
+        awaitingFrameRef.current = true;
+        socket.emit('process_frame', { frame: imageSrc });
+      }
+    }, 140);
+  };
 
   return (
-    <div style={{ textAlign: 'center', padding: '20px' }}>
-      <h1>🤟 Real-Time Hand Tracking & Letter Recognition</h1>
-      <p style={{ color: '#666', marginBottom: '20px' }}>
-        ASL Alphabet Recognition - 24 Letters (A-Y) with 96.86% Accuracy
-      </p>
+    <section className="recognizer-layout" aria-labelledby="recognizer-title">
+      <div className="recognizer-copy">
+        <p className="eyebrow">Recognizer</p>
+        <h2 id="recognizer-title">Practice ASL letters with live feedback.</h2>
+        <p>
+          The app checks the backend, model, camera, and recognition loop separately so failures are clear.
+        </p>
 
-      <div style={{ position: 'relative', display: 'inline-block' }}>
-        <Webcam
-          ref={webcamRef}
-          screenshotFormat="image/jpeg"
-          style={{
-            width: '640px',
-            height: '480px',
-            border: '3px solid #007bff',
-            borderRadius: '10px',
-            position: 'relative',
-            zIndex: 1
-          }}
-        />
-        
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '640px',
-            height: '480px',
-            zIndex: 2,
-            pointerEvents: 'none'
-          }}
-        />
-
-        {/* Status overlay */}
-        <div style={{
-          position: 'absolute',
-          top: '10px',
-          right: '10px',
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          color: 'white',
-          padding: '10px',
-          borderRadius: '8px',
-          zIndex: 3,
-          fontSize: '14px',
-          fontFamily: 'monospace'
-        }}>
-          <div>Status: {isTracking ? '🟢 Tracking' : '🔴 Stopped'}</div>
-          <div>Hands: {handsDetected}</div>
-          <div>FPS: {fps}</div>
+        <div className="status-grid" aria-live="polite">
+          <StatusPill label="Socket" value={backend.socketConnected ? 'Connected' : 'Connecting'} tone={backend.socketConnected ? 'good' : 'warn'} />
+          <StatusPill label="Model" value={backend.modelReady ? 'Ready' : 'Unavailable'} tone={backend.modelReady ? 'good' : 'bad'} />
+          <StatusPill label="Camera" value={cameraState === 'ready' ? 'Ready' : cameraState === 'error' ? 'Unavailable' : 'Pending'} tone={cameraState === 'ready' ? 'good' : cameraState === 'error' ? 'bad' : 'warn'} />
+          <StatusPill label="Recognition" value={primaryStatus.label} tone={primaryStatus.tone} />
         </div>
 
-        {/* Letter prediction overlay - BIG and prominent */}
-        {predictedLetter && (
-          <div style={{
-            position: 'absolute',
-            bottom: '20px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            backgroundColor: 'rgba(0, 123, 255, 0.9)',
-            color: 'white',
-            padding: '20px 40px',
-            borderRadius: '15px',
-            zIndex: 3,
-            fontSize: '48px',
-            fontWeight: 'bold',
-            fontFamily: 'Arial',
-            border: '3px solid white',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.5)'
-          }}>
-            <div>Letter: {predictedLetter}</div>
-            <div style={{ fontSize: '24px', marginTop: '10px' }}>
-              {(predictionConfidence * 100).toFixed(0)}% confident
-            </div>
+        {backend.modelStatus.initialization_error && (
+          <div className="notice danger" role="alert">
+            Model initialization failed: {backend.modelStatus.initialization_error}
+          </div>
+        )}
+        {handTrackingError && (
+          <div className="notice danger" role="alert">
+            Hand tracking initialization failed: {handTrackingError}
+          </div>
+        )}
+        {backend.socketError && !backend.socketConnected && (
+          <div className="notice warning" role="status">
+            Backend is not reachable yet. Render may still be waking up.
+          </div>
+        )}
+        {cameraError && (
+          <div className="notice danger" role="alert">
+            Camera unavailable: {cameraError}
           </div>
         )}
       </div>
 
-      <br />
-
-      <div style={{ marginTop: '20px' }}>
-        {!isTracking ? (
-          <button
-            onClick={startTracking}
-            style={{
-              padding: '15px 40px',
-              fontSize: '18px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              backgroundColor: '#28a745',
-              color: 'white',
-              border: 'none',
-              borderRadius: '10px',
-              boxShadow: '0 4px 6px rgba(0,0,0,0.2)',
-              transition: 'all 0.3s'
-            }}
-            onMouseOver={(e) => e.target.style.backgroundColor = '#218838'}
-            onMouseOut={(e) => e.target.style.backgroundColor = '#28a745'}
-          >
-            ▶️ Start Hand Tracking
-          </button>
-        ) : (
-          <button
-            onClick={stopTracking}
-            style={{
-              padding: '15px 40px',
-              fontSize: '18px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              backgroundColor: '#dc3545',
-              color: 'white',
-              border: 'none',
-              borderRadius: '10px',
-              boxShadow: '0 4px 6px rgba(0,0,0,0.2)',
-              transition: 'all 0.3s'
-            }}
-            onMouseOver={(e) => e.target.style.backgroundColor = '#c82333'}
-            onMouseOut={(e) => e.target.style.backgroundColor = '#dc3545'}
-          >
-            ⏹️ Stop Tracking
-          </button>
-        )}
-      </div>
-
-      <div style={{
-        marginTop: '30px',
-        padding: '20px',
-        backgroundColor: '#f8f9fa',
-        borderRadius: '10px',
-        maxWidth: '800px',
-        margin: '30px auto'
-      }}>
-        <h3>📋 Instructions:</h3>
-        <ol style={{ textAlign: 'left', lineHeight: '1.8' }}>
-          <li>Click "Start Hand Tracking"</li>
-          <li>Show your hand to the camera</li>
-          <li>Make any ASL letter sign (A-Y, excluding J and Z)</li>
-          <li>Watch the blue box appear showing the recognized letter!</li>
-          <li>Try different letters and see the confidence percentage</li>
-        </ol>
-        
-        <div style={{
-          marginTop: '20px',
-          padding: '15px',
-          backgroundColor: '#d1ecf1',
-          borderRadius: '8px',
-          border: '1px solid #bee5eb'
-        }}>
-          <strong>🎉 Model Info:</strong> Trained on 9,572 Kaggle samples with 96.86% accuracy!
-          <br />
-          <strong>🔤 Recognizes:</strong> A, B, C, D, E, F, G, H, I, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y
-          <br />
-          <strong>📊 Best Performance:</strong> D, F, K, Y (91-94% accuracy)
+      <div className="camera-panel">
+        <div className="camera-stage">
+          {cameraEnabled ? (
+            <Webcam
+              ref={webcamRef}
+              audio={false}
+              mirrored
+              screenshotFormat="image/jpeg"
+              screenshotQuality={0.72}
+              videoConstraints={{ facingMode: 'user', width: 640, height: 480 }}
+              onUserMedia={() => {
+                setCameraState('ready');
+                setCameraError(null);
+              }}
+              onUserMediaError={(error) => {
+                setCameraState('error');
+                setCameraError(error.message || 'Permission denied or no camera found.');
+              }}
+              className="camera-video"
+            />
+          ) : (
+            <div className="camera-placeholder">
+              <strong>Camera is off</strong>
+              <span>Enable it when you are ready to practice.</span>
+            </div>
+          )}
+          <canvas ref={canvasRef} className="camera-canvas" />
+          <div className={`camera-status ${primaryStatus.tone}`}>{primaryStatus.label}</div>
+          {predictedLetter && (
+            <div className="prediction-card" aria-live="polite">
+              <span className="prediction-letter">{predictedLetter}</span>
+              <span className="prediction-confidence">{Math.round(predictionConfidence * 100)}% confident</span>
+            </div>
+          )}
         </div>
 
-        <div style={{
-          marginTop: '15px',
-          padding: '15px',
-          backgroundColor: '#fff3cd',
-          borderRadius: '8px',
-          border: '1px solid #ffc107'
-        }}>
-          <strong>💡 Tip:</strong> Hold your hand steady for 2-3 seconds for best results. 
-          Keep your hand centered and well-lit!
+        <div className="control-row">
+          {!isTracking ? (
+            <button
+              className="primary-action"
+              onClick={() => {
+                if (!cameraEnabled) {
+                  setCameraEnabled(true);
+                  setCameraState('pending');
+                  return;
+                }
+                startTracking();
+              }}
+              disabled={cameraEnabled && !readyToTrack}
+            >
+              {cameraEnabled ? 'Start recognition' : 'Enable camera'}
+            </button>
+          ) : (
+            <button className="danger-action" onClick={stopTracking}>
+              Stop recognition
+            </button>
+          )}
+          <div className="runtime-stats" aria-live="polite">
+            <span>{handsDetected} hand{handsDetected === 1 ? '' : 's'}</span>
+            <span>{fps} FPS</span>
+          </div>
         </div>
+
+        <p className={recognitionError ? 'inline-message error' : 'inline-message'} role={recognitionError ? 'alert' : 'status'}>
+          {recognitionError || recognitionMessage}
+        </p>
       </div>
+    </section>
+  );
+}
+
+function StatusPill({ label, value, tone }) {
+  return (
+    <div className={`status-pill ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
