@@ -1,9 +1,12 @@
 services:
   - type: web
     name: signapp-backend
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k eventlet -w 1 --timeout 120 server:app --bind 0.0.0.0:$PORT
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /ready
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
+      - key: SIGNAPP_INFERENCE_BACKEND
+        value: numpy
+      - key: SIGNAPP_CORS_ORIGINS
+        value: https://signapp-frontend.vercel.app
